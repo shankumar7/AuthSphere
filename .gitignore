@@ -1,0 +1,40 @@
+# Byte-compiled / Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+*.sqlite3
+
+# Node / Frontend
+node_modules/
+dist/
+.vite/
+*.log
+
+# C++ / PlatformIO / Arduino
+.pio/
+.vscode/
+.idea/
+*.o
+*.elf
+*.bin
+
+# Secrets & Local State (preserve structure)
+secrets/*.txt
+secrets/*.key
+pki-offline/
+pki-state/*.key
+pki-state/*.pem
+pki-state/*.crt
+pki-state/*.srl
+mosquitto-data/*.db
+provision_out/
+
+# OS / Environment
+.DS_Store
+.env
+!.env.example
+*.swp
+ENDOFFILE

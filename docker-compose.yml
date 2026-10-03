@@ -1,0 +1,146 @@
+networks:
+  authsphere-net:
+    driver: bridge
+
+volumes:
+  pgdata:
+  mosquitto-data:
+  caddy-data:
+  dashboard-dist:
+
+secrets:
+  intermediate_key:
+    file: ./secrets/intermediate.key
+  svc_api_key:
+    file: ./secrets/svc_api.key
+  svc_bridge_key:
+    file: ./secrets/svc_bridge.key
+  jwt_secret:
+    file: ./secrets/jwt_secret.txt
+  fernet_key:
+    file: ./secrets/fernet_key.txt
+  postgres_password:
+    file: ./secrets/postgres_password.txt
+  dynsec_admin_password:
+    file: ./secrets/dynsec_admin_password.txt
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: authsphere-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-authsphere}
+      POSTGRES_DB: ${POSTGRES_DB:-authsphere}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - authsphere-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-authsphere}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  mosquitto:
+    image: eclipse-mosquitto:2.0.20
+    container_name: authsphere-mosquitto
+    restart: unless-stopped
+    ports:
+      - "8883:8883"
+    volumes:
+      - ./broker/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-data:/mosquitto/data
+      - ./pki-state:/mosquitto/pki:ro
+      - ./broker/entrypoint.sh:/mosquitto/entrypoint.sh:ro
+    entrypoint: ["/bin/sh", "/mosquitto/entrypoint.sh"]
+    networks:
+      - authsphere-net
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: authsphere-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+    environment:
+      - ENV=${ENV:-dev}
+      - PUBLIC_HOSTNAME=${PUBLIC_HOSTNAME:-localhost}
+      - MQTT_PUBLIC_HOSTNAME=${MQTT_PUBLIC_HOSTNAME:-localhost}
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-authsphere}@postgres:5432/${POSTGRES_DB:-authsphere}
+      - MQTT_HOST=mosquitto
+      - MQTT_PORT=8883
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    secrets:
+      - intermediate_key
+      - svc_api_key
+      - jwt_secret
+      - fernet_key
+      - postgres_password
+      - dynsec_admin_password
+    volumes:
+      - ./pki-state:/pki-state
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+    networks:
+      - authsphere-net
+
+  bridge:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: authsphere-bridge
+    restart: unless-stopped
+    command: python -m app.workers.main
+    environment:
+      - ENV=${ENV:-dev}
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-authsphere}@postgres:5432/${POSTGRES_DB:-authsphere}
+      - MQTT_HOST=mosquitto
+      - MQTT_PORT=8883
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    secrets:
+      - svc_bridge_key
+      - postgres_password
+    volumes:
+      - ./pki-state:/pki-state:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+    networks:
+      - authsphere-net
+
+  dashboard-build:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: authsphere-dashboard-build
+    volumes:
+      - dashboard-dist:/out
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: authsphere-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - dashboard-dist:/srv/dashboard:ro
+    depends_on:
+      - api
+    networks:
+      - authsphere-net
